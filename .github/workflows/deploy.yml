@@ -1,0 +1,49 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: homerLi007/generated-app-20261104-061552
+  KUBECONFIG: /home/forrestli/.kube/config
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, k3s, local]
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} + 2>/dev/null || true
+          git clone --depth 1 "git@github.com:${GITHUB_REPOSITORY}.git" .
+          git fetch --depth 1 origin "${GITHUB_SHA}"
+          git checkout "${GITHUB_SHA}"
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            docker login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
+
+      - name: Build and push image
+        run: |
+          IMG="${REGISTRY}/${IMAGE_NAME}:${GITHUB_SHA}"
+          IMG_LATEST="${REGISTRY}/${IMAGE_NAME}:latest"
+          docker build -f backend/Dockerfile -t "$IMG" -t "$IMG_LATEST" .
+          docker push "$IMG"
+          docker push "$IMG_LATEST"
+
+      - name: Deploy to K3s
+        run: |
+          IMG="${REGISTRY}/${IMAGE_NAME}:${GITHUB_SHA}"
+          sed -i "s|image:.*|image: ${IMG}|" k8s/deployment.yaml
+          kubectl apply -f k8s/
+          kubectl rollout status deployment/generated-app-20261104-061552 -n default --timeout=300s
+          kubectl get svc generated-app-20261104-061552-service -n default
